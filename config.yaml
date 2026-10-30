@@ -1,0 +1,37 @@
+bids_root: /home/vineet/Documents/DLSchizo/Data/ds007116download
+out_dir: ./work
+
+run_policy: first
+min_visits: 2
+max_visits: 2
+min_context: 1
+
+age:
+  file_glob: "sub-*/*_sessions.tsv"
+  session_col: session_id
+  age_col: age
+  units: years
+
+phenotype:
+  file: /home/vineet/Documents/DLSchizo/Data/ds007116download/phenotype/eswan_adhd.tsv
+  subject_col: participant_id
+  session_col: session_id
+  score_col: eswan_adhd_total_score
+  session_map: {}
+
+n4: true
+skullstrip:
+  mode: hdbet
+  hdbet_cmd: "hd-bet -i {input} -o {output} -device 0"
+  derivatives_root: /home/vineet/Documents/DLSchizo/Data/ds006732
+  mask_glob: "{subject}/{session}/anat/*desc-brain_mask.nii.gz"
+registration:
+  template: /home/vineet/.cache/templateflow/tpl-MNI152NLin2009cAsym/tpl-MNI152NLin2009cAsym_res-01_desc-brain_T1w.nii.gz
+  transform: Affine
+target_shape: [96, 96, 96]
+normalize: zscore
+
+tasks: [concurrent, final, future]
+require_all_visits: true
+n_folds: 5
+seed: 0
