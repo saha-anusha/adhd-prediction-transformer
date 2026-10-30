@@ -1,13 +1,5 @@
-#!/usr/bin/env python3
-"""Penn LEAD T1w preprocessing + sample construction for BrainIAC-based ADHD severity prediction.
 
-Stages (run individually or `all`):
-  manifest    build per-visit table: T1w path, age, E-SWAN score, visit index, elapsed time
-  preprocess  N4 -> skull-strip -> register -> resample to 96^3 -> normalize, with QC flags
-  samples     build task-specific samples (concurrent / final / future) with participant-level folds
 
-Usage:  python pipeline.py --config config.yaml all [--limit 5]
-"""
 from __future__ import annotations
 
 import argparse
@@ -20,7 +12,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import yaml
-
+import ants
 log = logging.getLogger("pennlead")
 T1_RE = re.compile(r"(sub-[^_]+)_(ses-[^_]+)")
 
@@ -29,8 +21,6 @@ def _norm(prefix: str, x) -> str:
     s = str(x)
     return s if s.startswith(prefix) else prefix + s
 
-
-# --------------------------------------------------------------------------- manifest
 def build_manifest(cfg: dict) -> pd.DataFrame:
     root, out = Path(cfg["bids_root"]), Path(cfg["out_dir"])
     out.mkdir(parents=True, exist_ok=True)
@@ -88,9 +78,9 @@ def build_manifest(cfg: dict) -> pd.DataFrame:
     return df
 
 
-# --------------------------------------------------------------------------- preprocessing
+#hd-bet to strip skull, remove non brain
 def _skullstrip(img, row, cfg, tmp: Path):
-    import ants
+    
     sk = cfg["skullstrip"]
     if sk["mode"] == "none":
         return img
@@ -103,7 +93,7 @@ def _skullstrip(img, row, cfg, tmp: Path):
                                              interp_type="nearestNeighbor")
         mask = ants.threshold_image(mask, 0.5, 1e9, 1, 0)
         if mask.sum() == 0:
-            raise RuntimeError("mask empty after resampling (physical-space mismatch?)")
+            raise RuntimeError("mask empty after resamp")
         return img * mask
     if sk["mode"] == "hdbet":
         inp, outp = tmp / "in.nii.gz", tmp / "out.nii.gz"
@@ -117,7 +107,7 @@ def preprocess_one(row, cfg, template, out_path: Path) -> dict:
     import ants
     img = ants.image_read(row.path)
     if cfg["n4"]:
-        img = ants.n4_bias_field_correction(img)
+        img = ants.n4_bias_correction(img)
     with tempfile.TemporaryDirectory() as t:
         img = _skullstrip(img, row, cfg, Path(t))
     if template is not None:
@@ -129,7 +119,7 @@ def preprocess_one(row, cfg, template, out_path: Path) -> dict:
     arr = img.numpy().astype(np.float32)
     brain = arr > 0
     if brain.sum() < 1000:
-        raise RuntimeError("almost no brain voxels after preprocessing")
+        raise RuntimeError("no brain voxels after preprocessing")
     v = arr[brain]
     arr[brain] = (v - v.mean()) / (v.std() + 1e-8) if cfg["normalize"] == "zscore" \
         else (v - v.min()) / (v.max() - v.min() + 1e-8)
@@ -140,7 +130,7 @@ def preprocess_one(row, cfg, template, out_path: Path) -> dict:
 
 
 def run_preprocess(cfg: dict, limit: int | None = None) -> pd.DataFrame:
-    import ants
+
     out = Path(cfg["out_dir"])
     man = pd.read_csv(out / "manifest.csv")
     if limit:
@@ -148,7 +138,7 @@ def run_preprocess(cfg: dict, limit: int | None = None) -> pd.DataFrame:
     tpl_path = cfg["registration"]["template"]
     template = ants.image_read(tpl_path) if tpl_path else None
     if template is None:
-        log.warning("No registration template set: scans stay in native space (BrainIAC expects MNI-like input).")
+        log.warning("No template set")
 
     recs = []
     for row in man.itertuples():
@@ -160,14 +150,14 @@ def run_preprocess(cfg: dict, limit: int | None = None) -> pd.DataFrame:
                 rec.update(brain_mm3=np.nan, brain_frac=np.nan)
             else:
                 rec.update(preprocess_one(row, cfg, template, dst))
-        except Exception as e:                    # keep going; failures go to the QC table
+        except Exception as e:                   
             rec.update(qc_ok=False, error=str(e)[:200], brain_mm3=np.nan, brain_frac=np.nan)
             log.warning("%s %s failed: %s", row.subject, row.session, e)
         recs.append(rec)
 
     qc = pd.DataFrame(recs)
     z = (qc.brain_mm3 - qc.brain_mm3.mean()) / qc.brain_mm3.std()
-    qc["brain_vol_outlier"] = z.abs() > 3         # flag for manual visual QC, not auto-dropped
+    qc["brain_vol_outlier"] = z.abs() > 3         
     qc.to_csv(out / "qc.csv", index=False)
     merged = man.merge(qc, on=["subject", "session"])
     merged.to_csv(out / "manifest_preproc.csv", index=False)
@@ -176,7 +166,7 @@ def run_preprocess(cfg: dict, limit: int | None = None) -> pd.DataFrame:
     return merged
 
 
-# --------------------------------------------------------------------------- samples
+
 def build_samples(cfg: dict) -> pd.DataFrame:
     out = Path(cfg["out_dir"])
     m = pd.read_csv(out / "manifest_preproc.csv")
@@ -188,7 +178,7 @@ def build_samples(cfg: dict) -> pd.DataFrame:
     rng = np.random.default_rng(cfg["seed"])
     subs = np.array(sorted(m.subject.unique()))
     rng.shuffle(subs)
-    fold = {s: i % cfg["n_folds"] for i, s in enumerate(subs)}   # participant-level folds
+    fold = {s: i % cfg["n_folds"] for i, s in enumerate(subs)}   
 
     mc, rows = cfg["min_context"], []
     for s, g in m.groupby("subject"):
@@ -213,7 +203,7 @@ def build_samples(cfg: dict) -> pd.DataFrame:
     return df
 
 
-# --------------------------------------------------------------------------- CLI
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     ap.add_argument("--config", default="config.yaml")
