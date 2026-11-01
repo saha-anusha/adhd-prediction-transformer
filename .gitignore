@@ -1,0 +1,24 @@
+# Data: never commit
+data/*
+!data/.gitkeep
+*.nii
+*.nii.gz
+*.npy
+*.npz
+*.pt
+*.pth
+*.ckpt
+
+# Dummy-run outputs (pipeline tests only)
+results/preds/dummy/
+results/tables/results_dummy.csv
+
+# Python / tooling
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.venv/
+venv/
+.env
+wandb/
+.DS_Store
